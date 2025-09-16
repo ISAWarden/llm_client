@@ -38,10 +38,16 @@ use super::error::*;
 
 pub fn create_pidfile(pidfile_path: &Path) -> Result<std::fs::File> {
     if pidfile_path.exists() {
-        return Err(ProcessError::CommandFailed {
-            action: "check pidfile existence",
-            source: format!("pidfile {pidfile_path:?} already exists").into(),
-        });
+        // Delete the existing pidfile instead of returning an error
+        match std::fs::remove_file(pidfile_path) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(ProcessError::CommandFailed {
+                    action: "delete existing pidfile",
+                    source: e.into(),
+                });
+            }
+        }
     }
 
     match pidfile_path.parent() {
