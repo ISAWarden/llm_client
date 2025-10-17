@@ -231,11 +231,10 @@ pub struct ServerArgs {
     pub log_file: Option<String>,
 
     /// Enable colored log output. This will use ANSI color codes in log messages for
-    /// easier reading (typically only effective in console output).  
-    #[serde(default, skip_serializing_if = "<&bool>::not")]
-    #[builder(default = true)]
-    #[arg(flag = "--log-colors")]
-    pub log_colors: bool,
+    /// easier reading (typically only effective in console output). Can be `auto`, `on` or `off`  
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[arg(option = "--log-colors")]
+    pub log_colors: Option<String>,
 
     /// Shorthand for maximum verbosity logging. Using `-v` (or `--verbose`) will
     /// set the log verbosity to the highest level, causing all debug and trace
