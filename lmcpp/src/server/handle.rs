@@ -281,6 +281,7 @@ impl LmcppServer {
         } else {
             load_budget.0
         };
+        sleep(Duration::from_secs(1));
         let retry_delay = retry_delay.0;
         let deadline = Instant::now() + overall_budget;
         loop {
