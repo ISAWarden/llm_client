@@ -209,7 +209,7 @@ impl LmcppServer {
 
         server_args.alias = Some(alias);
 
-        match Self::server_status(&client, Duration::from_millis(500), retry_delay.0) {
+        match Self::server_status(&client, Duration::from_secs(10), retry_delay.0) {
             ServerStatus::Loading => {
                 crate::error!(
                     "The client at that address is already loading a model. This shouldn't happen. Attempting to kill it before starting LmcppServer with correct model."
@@ -281,11 +281,10 @@ impl LmcppServer {
         } else {
             load_budget.0
         };
-        sleep(Duration::from_secs(1));
         let retry_delay = retry_delay.0;
         let deadline = Instant::now() + overall_budget;
         loop {
-            match Self::server_status(&client, Duration::from_secs(3), retry_delay) {
+            match Self::server_status(&client, Duration::from_secs(10), retry_delay) {
                 ServerStatus::RunningModel(running_model_name)
                     if model_ids_match(&running_model_name, &model_name) =>
                 {
@@ -359,7 +358,9 @@ impl LmcppServer {
         );
         debug_assert!(
             total_budget >= retry_delay,
-            "Total budget must be greater than or equal to retry delay"
+            "Total budget ({:?}) must be greater than or equal to retry delay ({:?})",
+            total_budget,
+            retry_delay
         );
         let deadline = Instant::now() + total_budget;
         loop {
