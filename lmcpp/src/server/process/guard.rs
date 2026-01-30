@@ -213,8 +213,7 @@ impl ServerProcessGuard {
             .map_err(|e| ProcessError::CommandFailed {
                 action: "wait after force-kill",
                 source: e.into(),
-            })?
-        {
+            })? {
             Some(status) => {
                 crate::info!("Server force-killed; exit status {status}");
                 Ok(())
@@ -244,7 +243,10 @@ impl ServerProcessGuard {
     /// Returns `None` if the pattern was not found in the CLI output
     /// (e.g., if the server output format changed or was not captured).
     pub fn inferred_ctx_window(&self) -> Option<u32> {
-        *self.inferred_ctx.lock().expect("Failed to lock inferred_ctx")
+        *self
+            .inferred_ctx
+            .lock()
+            .expect("Failed to lock inferred_ctx")
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -542,7 +544,10 @@ mod attach {
 
     use windows::Win32::{
         Foundation::{CloseHandle, HANDLE},
-        System::{JobObjects::*, Threading::CREATE_NEW_PROCESS_GROUP},
+        System::{
+            JobObjects::*,
+            Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW},
+        },
     };
 
     use super::*;
@@ -601,7 +606,7 @@ mod attach {
         }
 
         // ---- 3. Spawn the child process normally ------------------------
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP.0);
+        cmd.creation_flags((CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW).0);
         let mut child = cmd.spawn().map_err(|e| ProcessError::CommandFailed {
             action: "spawn",
             source: Box::new(e),
