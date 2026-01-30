@@ -1,27 +1,29 @@
-//! Server Process - Guard
+//! Server Process - Guard
 //! ====================
 //!
-//! Launches and supervises a *single* instance of the inference‑server
-//! binary, guaranteeing robust clean‑up across Linux/BSD, macOS and
+//! Launches and supervises a *single* instance of the inference-server
+//! binary, guaranteeing robust clean-up across Linux/BSD, macOS and
 //! Windows.
 //!
-//! Key responsibilities  
+//! Key responsibilities
 //! --------------------
-//! * **Spawn** the server with validated command‑line arguments.  
-//! * **Persist** a unique *pid‑file* to prevent concurrent launches.  
+//! * **Spawn** the server with validated command-line arguments.
+//! * **Persist** a unique *pid-file* to prevent concurrent launches.
 //! * **Contain** the entire process tree using the best mechanism per
-//!   platform (process‑group, anonymous pipe, or Windows job object).  
-//! * **Clean up** gracefully (`SIGTERM`/`Kill` → timeout → force kill)
+//!   platform (process-group, anonymous pipe, or Windows job object).
+//! * **Clean up** gracefully (`SIGTERM`/`Kill` -> timeout -> force kill)
 //!   and delete artefacts on [`stop`] or on `Drop`.
 //!
 //! The implementation favours **RAII** over global state: if a test or a
-//! CI job crashes, the OS still reaps the child because the guard’s
+//! CI job crashes, the OS still reaps the child because the guard's
 //! destructor runs when the process aborts.
 
 use std::{
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
+    thread,
     time::Duration,
 };
 
@@ -30,31 +32,39 @@ use wait_timeout::ChildExt;
 use super::{error::*, kill::*, pid::*, *};
 use crate::server::types::start_args::ServerArgs;
 
+/// Pattern to match in CLI output: `I llama_context: n_ctx         = 12032`
+/// The number after `=` is the inferred context window.
+const N_CTX_PATTERN: &str = "llama_context: n_ctx";
+/// Timeout for waiting to read the n_ctx from server output.
+const N_CTX_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// RAII handle owning a running server instance.
 ///
 /// While this guard is alive:
-/// * the child process is guaranteed to stay running, and  
-/// * external launches are prevented by the on‑disk *pid‑file*.
+/// * the child process is guaranteed to stay running, and
+/// * external launches are prevented by the on-disk *pid-file*.
 ///
 /// Dropping the guard (or calling [`stop`]) kills **the whole process
-/// tree** and removes the pid‑file, regardless of the platform‑specific
+/// tree** and removes the pid-file, regardless of the platform-specific
 /// containment method.
 ///
 /// **Platform notes**
 /// | OS | Containment method | Extra field |
 /// |----|--------------------|-------------|
-/// | Linux/BSD | Process‑group + `prctl(PDEATHSIG)` | – |
+/// | Linux/BSD | Process-group + `prctl(PDEATHSIG)` | - |
 /// | macOS | Anonymous pipe (*lifeline*) | `_life` |
-/// | Windows | NT Job object (*kill‑on‑close*) | `_job` |
+/// | Windows | NT Job object (*kill-on-close*) | `_job` |
 #[derive(Debug)]
 pub struct ServerProcessGuard {
     /// Handle to the child process; `None` once reaped or transferred.
     child: std::sync::RwLock<Option<Child>>,
-    /// Absolute path to the pid‑file created on successful launch.
+    /// Absolute path to the pid-file created on successful launch.
     pidfile: PathBuf,
-    /// Windows‑only: RAII wrapper around the Job object.
+    /// Inferred context window from server CLI output, if found.
+    inferred_ctx: Arc<Mutex<Option<u32>>>,
+    /// Windows-only: RAII wrapper around the Job object.
     _job: attach::JobGuard,
-    /// macOS‑only: write‑end of the lifeline pipe.
+    /// macOS-only: write-end of the lifeline pipe.
     _life: attach::Lifeline,
 }
 
@@ -84,7 +94,7 @@ impl ServerProcessGuard {
         let guard = match Self::new_inner(cmd, pidfile_path.to_path_buf()) {
             Ok(g) => g,
             Err(e) => {
-                // start-up failed → remove the empty pid-file we just created
+                // start-up failed -> remove the empty pid-file we just created
                 let _ = std::fs::remove_file(&pidfile_path);
                 return Err(e);
             }
@@ -118,11 +128,11 @@ impl ServerProcessGuard {
         Ok(guard)
     }
 
-    /// Attempt a best‑effort, idempotent shutdown:
-    /// 1. *Polite* → send `SIGTERM` / `TerminateProcess`.  
-    /// 2. Wait up to [`POLITE_WAIT`].  
-    /// 3. *Force* → `kill(‑9)` / `Taskkill`.  
-    /// 4. Delete the pid‑file (ignoring permissions errors).
+    /// Attempt a best-effort, idempotent shutdown:
+    /// 1. *Polite* -> send `SIGTERM` / `TerminateProcess`.
+    /// 2. Wait up to [`POLITE_WAIT`].
+    /// 3. *Force* -> `kill(-9)` / `Taskkill`.
+    /// 4. Delete the pid-file (ignoring permissions errors).
     ///
     /// Logging is performed at **info** level for graceful exits and at
     /// **error** level for failures.
@@ -203,7 +213,8 @@ impl ServerProcessGuard {
             .map_err(|e| ProcessError::CommandFailed {
                 action: "wait after force-kill",
                 source: e.into(),
-            })? {
+            })?
+        {
             Some(status) => {
                 crate::info!("Server force-killed; exit status {status}");
                 Ok(())
@@ -225,11 +236,23 @@ impl ServerProcessGuard {
             .expect("Child process not spawned")
     }
 
+    /// Returns the inferred context window from the server CLI output.
+    ///
+    /// This value is extracted from lines like:
+    /// `I llama_context: n_ctx         = 12032`
+    ///
+    /// Returns `None` if the pattern was not found in the CLI output
+    /// (e.g., if the server output format changed or was not captured).
+    pub fn inferred_ctx_window(&self) -> Option<u32> {
+        *self.inferred_ctx.lock().expect("Failed to lock inferred_ctx")
+    }
+
     #[cfg(all(test, target_os = "linux"))]
     pub fn dummy() -> Self {
         Self {
             child: None.into(),
             pidfile: PathBuf::from("/dummy/path"),
+            inferred_ctx: Arc::new(Mutex::new(None)),
             _job: (),
             _life: (),
         }
@@ -240,6 +263,7 @@ impl ServerProcessGuard {
         Self {
             child: None.into(),
             pidfile: PathBuf::from("/dummy/path"),
+            inferred_ctx: Arc::new(Mutex::new(None)),
             _job: (),
             _life: attach::Lifeline(None),
         }
@@ -250,6 +274,7 @@ impl ServerProcessGuard {
         Self {
             child: None.into(),
             pidfile: PathBuf::from("/dummy/path"),
+            inferred_ctx: Arc::new(Mutex::new(None)),
             _job: attach::JobGuard(None),
             _life: (),
         }
@@ -265,14 +290,76 @@ impl Drop for ServerProcessGuard {
     }
 }
 
-// Linux / other Unix ────────────────────────────
+/// Parse the n_ctx value from a line of server output.
+///
+/// Expected format: `I llama_context: n_ctx         = 12032`
+/// Returns `Some(12032)` if found, `None` otherwise.
+fn parse_n_ctx_from_line(line: &str) -> Option<u32> {
+    if !line.contains(N_CTX_PATTERN) {
+        return None;
+    }
+
+    // Split by '=' and take the right side
+    line.split('=')
+        .nth(1)
+        .map(|value| value.trim().parse::<u32>().ok())
+        .flatten()
+}
+
+/// Shared helper to read child output and extract n_ctx value.
+/// This is DRY across all platforms.
+///
+/// Spawns a thread to stream from the reader and look for the n_ctx pattern.
+/// The found value is stored in the shared `inferred_ctx` Arc<Mutex<Option<u32>>>.
+///
+/// Returns immediately after spawning the monitoring thread.
+/// The thread will terminate when the reader reaches EOF or the process exits.
+fn spawn_ctx_reader<R: std::io::Read + Send + 'static>(
+    reader: R,
+    inferred_ctx: Arc<Mutex<Option<u32>>>,
+) {
+    thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        let start_time = std::time::Instant::now();
+
+        for line in reader.lines() {
+            // Check for timeout
+            if start_time.elapsed() > N_CTX_READ_TIMEOUT {
+                crate::warn!(
+                    "Timeout waiting for n_ctx in server output after {:?}",
+                    N_CTX_READ_TIMEOUT
+                );
+                break;
+            }
+
+            match line {
+                Ok(line) => {
+                    if let Some(ctx) = parse_n_ctx_from_line(&line) {
+                        crate::info!("Inferred context window from CLI: {}", ctx);
+                        let mut guard = inferred_ctx.lock().expect("Failed to lock inferred_ctx");
+                        if guard.is_none() {
+                            *guard = Some(ctx);
+                        }
+                        // We found it, but continue reading to avoid breaking the pipe
+                    }
+                }
+                Err(e) => {
+                    crate::debug!("Error reading server output line: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+}
+
+// Linux / other Unix -----------------------
 #[cfg(all(unix, not(target_os = "macos")))]
 mod attach {
     //! Platform glue for `ServerProcessGuard`
     //!
-    //! Each sub‑module provides:
-    //! * a platform‑specific `attach` function that spawns the child and
-    //!   returns a fully‑initialised [`ServerProcessGuard`], and
+    //! Each sub-module provides:
+    //! * a platform-specific `attach` function that spawns the child and
+    //!   returns a fully-initialised [`ServerProcessGuard`], and
     //! * minimal helper types (`JobGuard`, `Lifeline`) whose sole purpose is
     //!   to automate resource release via `Drop`.
 
@@ -290,6 +377,10 @@ mod attach {
     pub type Lifeline = ();
 
     pub fn attach(mut cmd: Command, pidfile: PathBuf) -> Result<ServerProcessGuard> {
+        // Capture stdout and stderr to extract n_ctx
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
         // Put the child in its own PGID **and** arm the parent-death signal.
         unsafe {
             cmd.pre_exec(|| {
@@ -303,27 +394,41 @@ mod attach {
                 Ok(())
             })
         };
-        let child = cmd.spawn().map_err(|e| ProcessError::CommandFailed {
+
+        let mut child = cmd.spawn().map_err(|e| ProcessError::CommandFailed {
             action: "spawn child process",
             source: e.into(),
         })?;
+
+        // Shared state for inferred context window
+        let inferred_ctx: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+
+        // Spawn threads to read stdout and stderr, looking for n_ctx
+        if let Some(stdout) = child.stdout.take() {
+            spawn_ctx_reader(stdout, inferred_ctx.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_ctx_reader(stderr, inferred_ctx.clone());
+        }
+
         Ok(ServerProcessGuard {
             child: Some(child).into(),
             pidfile,
+            inferred_ctx,
             _job: (),
             _life: (),
         })
     }
 }
 
-// macOS ──────────────────────────────────────────────────
+// macOS ---------------------------------------------------------
 #[cfg(target_os = "macos")]
 mod attach {
     //! Platform glue for `ServerProcessGuard`
     //!
-    //! Each sub‑module provides:
-    //! * a platform‑specific `attach` function that spawns the child and
-    //!   returns a fully‑initialised [`ServerProcessGuard`], and
+    //! Each sub-module provides:
+    //! * a platform-specific `attach` function that spawns the child and
+    //!   returns a fully-initialised [`ServerProcessGuard`], and
     //! * minimal helper types (`JobGuard`, `Lifeline`) whose sole purpose is
     //!   to automate resource release via `Drop`.
 
@@ -348,13 +453,17 @@ mod attach {
     pub type JobGuard = (); // no job object on mac
 
     pub fn attach(mut cmd: Command, pidfile: PathBuf) -> Result<ServerProcessGuard> {
-        // ✓ 1. Open the pipe (still fallible → same error handling)
+        // Capture stdout and stderr to extract n_ctx
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        // ✓ 1. Open the pipe (still fallible -> same error handling)
         let (r, w) = pipe().map_err(|e| ProcessError::CommandFailed {
             action: "create pipe for pre_exec",
             source: e.into(),
         })?;
 
-        // ✓ 2. Assert they’re different; “≥ 0” is redundant for OwnedFd
+        // ✓ 2. Assert they're different; ">= 0" is redundant for OwnedFd
         debug_assert!(
             r.as_raw_fd() != w.as_raw_fd(),
             "pipe() returned duplicate FDs"
@@ -381,7 +490,7 @@ mod attach {
         cmd.env("LIFELINE_FD", lifeline_fd.to_string());
 
         // ✓ 5. Spawn, then drop the read end in the parent
-        let child = match cmd.spawn() {
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
                 drop(r); // close read end in case of error
@@ -396,23 +505,36 @@ mod attach {
 
         // ✓ 6. Keep the write end alive as Lifeline
         let owned_w = w; // already an OwnedFd; no unsafe
+
+        // Shared state for inferred context window
+        let inferred_ctx: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+
+        // Spawn threads to read stdout and stderr, looking for n_ctx
+        if let Some(stdout) = child.stdout.take() {
+            spawn_ctx_reader(stdout, inferred_ctx.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_ctx_reader(stderr, inferred_ctx.clone());
+        }
+
         Ok(ServerProcessGuard {
             child: Some(child).into(),
             pidfile,
+            inferred_ctx,
             _job: (),
             _life: Lifeline(Some(owned_w)),
         })
     }
 }
 
-// Windows ────────────────────────────────────────────────
+// Windows -------------------------------------------------------
 #[cfg(windows)]
 mod attach {
     //! Platform glue for `ServerProcessGuard`
     //!
-    //! Each sub‑module provides:
-    //! * a platform‑specific `attach` function that spawns the child and
-    //!   returns a fully‑initialised [`ServerProcessGuard`], and
+    //! Each sub-module provides:
+    //! * a platform-specific `attach` function that spawns the child and
+    //!   returns a fully-initialised [`ServerProcessGuard`], and
     //! * minimal helper types (`JobGuard`, `Lifeline`) whose sole purpose is
     //!   to automate resource release via `Drop`.
 
@@ -444,7 +566,11 @@ mod attach {
     pub type Lifeline = (); // no lifeline on Windows
 
     pub fn attach(mut cmd: Command, pidfile: PathBuf) -> Result<ServerProcessGuard> {
-        // ── 1. Create a job object ─────────────────────────────────────
+        // Capture stdout and stderr to extract n_ctx
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        // ---- 1. Create a job object ------------------------------------
         let hjob = unsafe {
             CreateJobObjectW(None, None).map_err(|e| ProcessError::CommandFailed {
                 action: "CreateJobObjectW",
@@ -457,7 +583,7 @@ mod attach {
 
         let mut job_guard = JobGuard(Some(hjob));
 
-        // ── 2. Set “kill on job close” so dropping the handle nukes the tree ──
+        // ---- 2. Set "kill on job close" so dropping the handle nukes the tree ----
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 
@@ -474,14 +600,14 @@ mod attach {
             })?;
         }
 
-        // ── 3. Spawn the child process normally ───────────────────────────────
+        // ---- 3. Spawn the child process normally ------------------------
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP.0);
-        let child = cmd.spawn().map_err(|e| ProcessError::CommandFailed {
+        let mut child = cmd.spawn().map_err(|e| ProcessError::CommandFailed {
             action: "spawn",
             source: Box::new(e),
         })?;
 
-        // ── 4. Put the child into the job (ignore “already in a job”) ─────────
+        // ---- 4. Put the child into the job (ignore "already in a job") ----
         let assign_res = unsafe { AssignProcessToJobObject(hjob, HANDLE(child.as_raw_handle())) };
 
         if let Err(e) = assign_res {
@@ -492,16 +618,28 @@ mod attach {
             });
         }
 
-        // ── 5. Success! Transfer ownership of the job handle ──────────────────────
+        // ---- 5. Success! Transfer ownership of the job handle ----------
         // Extract the handle without dropping it
         let hjob = job_guard
             .0
             .take()
             .expect("job handle should still be present");
 
+        // Shared state for inferred context window
+        let inferred_ctx: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+
+        // Spawn threads to read stdout and stderr, looking for n_ctx
+        if let Some(stdout) = child.stdout.take() {
+            spawn_ctx_reader(stdout, inferred_ctx.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_ctx_reader(stderr, inferred_ctx.clone());
+        }
+
         Ok(ServerProcessGuard {
             child: Some(child).into(),
             pidfile,
+            inferred_ctx,
             _job: JobGuard(Some(hjob)), // RAII: handle closed (and tree killed) on Drop
             _life: (),                  // no lifeline semantics needed on Windows
         })
@@ -532,12 +670,12 @@ mod tests {
         std::fs::set_permissions(path, perms)
     }
 
-    // ───────────────────────── Consolidated happy- / sad-paths ─────────────
+    // ---------------------- Consolidated happy- / sad-paths -----------------
 
     /// One test that exercises every internal state branch of `ServerProcessGuard::stop()`.
     #[test]
     fn stop_variants() {
-        // ── 1. Child has already exited ────────────────────────────────────
+        // ---- 1. Child has already exited --------------------------------
         {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             let cmd = std::process::Command::new("true");
@@ -554,7 +692,7 @@ mod tests {
             assert!(g.stop().is_ok(), "stop() should succeed after exit");
         }
 
-        // ── 2. `self.child` is already `None` (ownership moved) ─────────────
+        // ---- 2. `self.child` is already `None` (ownership moved) --------
         {
             let td = tempfile::tempdir().unwrap();
             let pf = td.path().join("pid");
@@ -563,7 +701,7 @@ mod tests {
             assert!(g.stop().is_ok(), "stop() should succeed when child == None");
         }
 
-        // ── 3. Child still running; must be killed gracefully/forcibly ─────
+        // ---- 3. Child still running; must be killed gracefully/forcibly --
         {
             let td = tempfile::tempdir().unwrap();
             let pf = td.path().join("pid");
@@ -572,7 +710,7 @@ mod tests {
         }
     }
 
-    // ───────────────────────── Stand-alone negative paths ──────────────────
+    // ---------------------- Stand-alone negative paths ---------------------
 
     #[test]
     fn attach_invalid_bin_path_errors() {
@@ -661,5 +799,43 @@ mod tests {
             }
             _ => panic!("unexpected error variant: {err:?}"),
         }
+    }
+
+    // ---------------------- n_ctx parsing tests ---------------------------
+
+    #[test]
+    fn parse_n_ctx_from_line_valid() {
+        let line = "0.00.368.622 I llama_context: n_ctx         = 12032";
+        assert_eq!(parse_n_ctx_from_line(line), Some(12032));
+    }
+
+    #[test]
+    fn parse_n_ctx_from_line_with_different_spacing() {
+        let line = "I llama_context: n_ctx = 4096";
+        assert_eq!(parse_n_ctx_from_line(line), Some(4096));
+    }
+
+    #[test]
+    fn parse_n_ctx_from_line_no_match() {
+        let line = "Some other log line without n_ctx";
+        assert_eq!(parse_n_ctx_from_line(line), None);
+    }
+
+    #[test]
+    fn parse_n_ctx_from_line_empty_value() {
+        let line = "I llama_context: n_ctx         = ";
+        assert_eq!(parse_n_ctx_from_line(line), None);
+    }
+
+    #[test]
+    fn parse_n_ctx_from_line_invalid_value() {
+        let line = "I llama_context: n_ctx         = not-a-number";
+        assert_eq!(parse_n_ctx_from_line(line), None);
+    }
+
+    #[test]
+    fn inferred_ctx_window_initially_none() {
+        let guard = ServerProcessGuard::dummy();
+        assert_eq!(guard.inferred_ctx_window(), None);
     }
 }

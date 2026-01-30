@@ -408,14 +408,14 @@ impl LmcppRecipe {
         let repo_url = Self::LLAMA_CPP_REPO_URL;
 
         let url = if cfg!(target_os = "linux") {
-            format!("{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-ubuntu-x64.zip")
+            format!("{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-ubuntu-x64.tar.gz")
         } else if cfg!(target_os = "macos") {
             match std::env::consts::ARCH {
                 "aarch64" => format!(
-                    "{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-macos-arm64.zip"
+                    "{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-macos-arm64.tar.gz"
                 ),
                 "x86_64" => format!(
-                    "{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-macos-x64.zip"
+                    "{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-macos-x64.tar.gz"
                 ),
                 arch => panic!("Unsupported architecture on macOS: {}", arch),
             }

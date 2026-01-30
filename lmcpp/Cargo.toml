@@ -34,6 +34,8 @@ url.workspace=true
 uuid={version="1.17.0", features=["v4"]}
 wait-timeout="0.2.1"
 zip="5.1.1"
+flate2 = "1.1"
+tar = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 nix={version="0.30.1", features=["fs", "process", "signal"], default-features=false}

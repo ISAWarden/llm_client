@@ -2,16 +2,21 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{LmcppError, LmcppResult};
 
-pub fn download_and_extract_zip(url: &str, working_dir: &Path, zip_file_name: &str) -> LmcppResult<()> {
+pub fn download_and_extract_zip(url: &str, working_dir: &Path, archive_file_name: &str) -> LmcppResult<()> {
     std::fs::create_dir_all(working_dir).map_err(|e| {
         LmcppError::file_system("create working directory", working_dir.to_path_buf(), e)
     })?;
 
-    let zip_path = download_zip(url, working_dir, zip_file_name)?;
-    extract_zip(working_dir, &zip_path)?;
+    let archive_path = download_zip(url, working_dir, archive_file_name)?;
 
-    std::fs::remove_file(&zip_path).map_err(|e| {
-        LmcppError::file_system("remove zip file after extraction", zip_path.clone(), e)
+    if url.ends_with(".tar.gz") {
+        extract_tar_gz(working_dir, &archive_path)?;
+    } else {
+        extract_zip(working_dir, &archive_path)?;
+    }
+
+    std::fs::remove_file(&archive_path).map_err(|e| {
+        LmcppError::file_system("remove archive file after extraction", archive_path.clone(), e)
     })?;
     Ok(())
 }
@@ -113,6 +118,19 @@ pub fn extract_zip(working_dir: &Path, zip_path: &Path) -> LmcppResult<()> {
             })?;
         }
     }
+
+    Ok(())
+}
+
+pub fn extract_tar_gz(working_dir: &Path, archive_path: &Path) -> LmcppResult<()> {
+    let tar_gz = std::fs::File::open(archive_path)
+        .map_err(|e| LmcppError::file_system("open tar.gz file", archive_path.to_path_buf(), e))?;
+
+    let gz_decoder = flate2::read::GzDecoder::new(tar_gz);
+    let mut archive = tar::Archive::new(gz_decoder);
+
+    archive.unpack(working_dir)
+        .map_err(|e| LmcppError::file_system("unpack tar archive", archive_path.to_path_buf(), e))?;
 
     Ok(())
 }
