@@ -91,12 +91,13 @@ Your Rust App
 
 ---
 ## Supported Platforms
-| Platform   | CPU | CUDA | Metal | Binary Sources       |
-|------------|-----|------|-------|----------------------|
-| Linux x64  | ✅ | ✅ | –  | Pre-built + Source |
-| macOS ARM  | ✅ | –  | ✅ | Pre-built + Source |
-| macOS x64  | ✅ | –  | ✅ | Pre-built + Source |
-| Windows x64| ✅ | ✅ | –  | Pre-built + Source |
+| Platform   | CPU | CUDA | ROCm | Vulkan | Metal | Binary Sources       |
+|------------|-----|------|------|--------|-------|----------------------|
+| Linux x64  | ✅ | Source | ✅ | ✅ | –  | Pre-built + Source |
+| Linux ARM  | ✅ | –  | –  | ✅ | –  | Pre-built + Source |
+| macOS ARM  | ✅ | –  | –  | –  | ✅ | Pre-built + Source |
+| macOS x64  | ✅ | –  | –  | –  | ✅ | Pre-built + Source |
+| Windows x64| ✅ | ✅ | HIP | ✅ | –  | Pre-built + Source |
 
 ---
 

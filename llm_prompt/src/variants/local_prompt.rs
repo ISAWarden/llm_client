@@ -1,10 +1,15 @@
-use crate::PromptTokenizer;
-use minijinja::value::{from_args, Value, ValueKind};
-use minijinja::{context, Environment, Error, ErrorKind};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard},
+};
+
+use minijinja::{
+    Environment, Error, ErrorKind, context,
+    value::{Value, ValueKind, from_args},
+};
 use serde::Serialize;
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::{Arc, MutexGuard};
+
+use crate::PromptTokenizer;
 
 /// A prompt formatter for local LLMs that use chat templates.
 ///

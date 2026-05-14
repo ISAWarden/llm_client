@@ -1,5 +1,5 @@
 [package]
-authors=["Shelby Jenkins"]
+authors=["Shelby Jenkins", "Peter Willemsen"]
 categories=["api-bindings", "development-tools"]
 description="Rust bindings for llama.cpp's server with managed toolchain, typed endpoints, and UDS/HTTP support"
 documentation="https://docs.rs/lmcpp"
@@ -10,7 +10,7 @@ license="MIT"
 name="lmcpp"
 readme="README.md"
 repository="https://github.com/shelbyJenkins/llm_client"
-version="0.1.2"
+version="0.1.3"
 
 [dependencies]
 bon={version="3.6.4", features=["implied-bounds"]}

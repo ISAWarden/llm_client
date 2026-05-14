@@ -106,12 +106,13 @@ Your Rust App
 
 ---
 ## Supported Platforms
-| Platform   | CPU | CUDA | Metal | Binary Sources       |
-|------------|-----|------|-------|----------------------|
-| Linux x64  | ✅ | ✅ | –  | Pre-built + Source |
-| macOS ARM  | ✅ | –  | ✅ | Pre-built + Source |
-| macOS x64  | ✅ | –  | ✅ | Pre-built + Source |
-| Windows x64| ✅ | ✅ | –  | Pre-built + Source |
+| Platform   | CPU | CUDA | ROCm | Vulkan | Metal | Binary Sources       |
+|------------|-----|------|------|--------|-------|----------------------|
+| Linux x64  | ✅ | Source | ✅ | ✅ | –  | Pre-built + Source |
+| Linux ARM  | ✅ | –  | –  | ✅ | –  | Pre-built + Source |
+| macOS ARM  | ✅ | –  | –  | –  | ✅ | Pre-built + Source |
+| macOS x64  | ✅ | –  | –  | –  | ✅ | Pre-built + Source |
+| Windows x64| ✅ | ✅ | HIP | ✅ | –  | Pre-built + Source |
 
 ---
 
@@ -149,4 +150,3 @@ Shelby Jenkins - Here or Linkedin
 [license-url]: https://github.com/ShelbyJenkins/llm_client/blob/master/LICENSE.txt
 <!-- [linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
 [linkedin-url]: https://www.linkedin.com -->
-

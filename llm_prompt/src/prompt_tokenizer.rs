@@ -1,5 +1,4 @@
-use std::fmt::Debug;
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 /// A trait for tokenizers that can be used with the prompt management system.
 ///

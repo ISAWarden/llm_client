@@ -1,9 +1,11 @@
-use crate::{token_count::total_prompt_tokens_openai_format, PromptTokenizer};
-use serde::Serialize;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, MutexGuard},
 };
+
+use serde::Serialize;
+
+use crate::{PromptTokenizer, token_count::total_prompt_tokens_openai_format};
 
 /// A prompt formatter for API-based language models that follow OpenAI's message format.
 ///

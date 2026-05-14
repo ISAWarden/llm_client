@@ -37,8 +37,6 @@ fn killall_is_idempotent() -> anyhow::Result<()> {
     Ok(())
 }
 
-
-
 /// Smoke‑test that `--help` prints and exits 0.
 /// (No shared state ⟶ runs safely in parallel.)
 #[test]

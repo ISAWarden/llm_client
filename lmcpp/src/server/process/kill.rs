@@ -215,7 +215,7 @@ fn kill_pids(pids: &[u32], polite_wait: Duration) -> Result<()> {
 
     #[cfg(target_os = "macos")]
     for &pid in &uniq {
-        use nix::sys::wait::{waitpid, WaitPidFlag};
+        use nix::sys::wait::{WaitPidFlag, waitpid};
         let _ = nix::unistd::Pid::from_raw(pid as i32);
         // Try to reap our own children; ignore errors & non‑children.
         let _ = waitpid(
@@ -250,7 +250,7 @@ fn kill_pids(pids: &[u32], polite_wait: Duration) -> Result<()> {
 pub fn kill_pid(pid: u32) -> Result<()> {
     use nix::{
         errno::Errno,
-        sys::signal::{kill, Signal},
+        sys::signal::{Signal, kill},
         unistd::Pid,
     };
     match kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
@@ -272,7 +272,7 @@ pub fn kill_pid(pid: u32) -> Result<()> {
 fn force_kill_pid(pid: u32) -> Result<()> {
     use nix::{
         errno::Errno,
-        sys::signal::{kill, Signal},
+        sys::signal::{Signal, kill},
         unistd::Pid,
     };
     match kill(Pid::from_raw(pid as i32), Signal::SIGKILL) {
@@ -294,7 +294,7 @@ fn force_kill_pid(pid: u32) -> Result<()> {
 pub fn kill_pid(pid: u32) -> Result<()> {
     use windows::Win32::{
         Foundation::CloseHandle,
-        System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE},
+        System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess},
     };
 
     unsafe {
@@ -326,7 +326,7 @@ pub fn kill_pid(pid: u32) -> Result<()> {
 pub fn force_kill_pid(pid: u32) -> Result<()> {
     use windows::Win32::{
         Foundation::CloseHandle,
-        System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE},
+        System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess},
     };
     fn win32_error(action: &'static str) -> ProcessError {
         // windows::core::Error already wraps GetLastError + FormatMessageW.

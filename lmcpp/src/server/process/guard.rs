@@ -85,6 +85,7 @@ impl ServerProcessGuard {
 
         let mut cmd = Command::new(bin_path);
         cmd.current_dir(bin_dir);
+        server_args.apply_env_to_command(&mut cmd);
 
         use cmdstruct::Command as _;
         cmd.args(server_args.command().get_args());

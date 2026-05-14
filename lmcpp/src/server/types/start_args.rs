@@ -41,6 +41,7 @@
 use std::{
     fmt::{self, Display},
     ops::Not,
+    process::Command as ProcessCommand,
 };
 
 use bon::Builder;
@@ -63,6 +64,15 @@ pub const DEFAULT_HF_FILE: &str = "bartowski/google_gemma-3-1b-it-qat-Q4_K_M.ggu
 #[builder(derive(Debug, Clone), on(String, into), finish_fn(vis = "", name = build_internal))]
 #[command(executable = "overwritten_at_runtime")]
 pub struct ServerArgs {
+    /// Environment variables to set only on the spawned `llama-server` process.
+    ///
+    /// These are process environment entries, not llama-server CLI arguments. Use this for
+    /// runtime knobs exposed by a specific llama.cpp build, for example
+    /// `TURBO_AUTO_ASYMMETRIC=0`.
+    #[builder(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executable_env: Vec<(String, String)>,
+
     // ──────────────── Model selection & HF auth ─────────────────
     // Denotes whether the model source is set (local file, URL, or Hugging Face).
     #[allow(dead_code)]
@@ -520,6 +530,14 @@ pub struct ServerArgs {
     #[arg(option = "--cache-type-v")]
     pub cache_type_v: Option<String>,
 
+    /// Use a single unified KV buffer shared across all sequences. This corresponds
+    /// to llama-server's `-kvu` / `--kv-unified` flag and is useful when sequence
+    /// slots should share one KV cache allocation.
+    #[serde(default, skip_serializing_if = "<&bool>::not")]
+    #[builder(default)]
+    #[arg(flag = "-kvu")]
+    pub kv_unified: bool,
+
     /// Threshold for KV cache defragmentation (fraction of free space). If the KV
     /// memory fragmentation exceeds this fraction, the cache will be defragmented.
     /// For example, 0.1 (10%) by default; set to a negative value to disable
@@ -927,6 +945,50 @@ impl Default for ServerArgs {
     }
 }
 
+impl ServerArgs {
+    /// Set an environment variable on the spawned `llama-server` executable.
+    ///
+    /// This mutates only this [`ServerArgs`] value. It does not change the current Rust
+    /// process environment.
+    pub fn set_env_var<K, V>(&mut self, key: K, value: V) -> &mut Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let key = key.into();
+        let value = value.into();
+        if let Some((_, existing_value)) = self
+            .executable_env
+            .iter_mut()
+            .find(|(existing_key, _)| existing_key == &key)
+        {
+            *existing_value = value;
+        } else {
+            self.executable_env.push((key, value));
+        }
+        self
+    }
+
+    /// Builder-style variant of [`ServerArgs::set_env_var`].
+    #[must_use]
+    pub fn with_env_var<K, V>(mut self, key: K, value: V) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.set_env_var(key, value);
+        self
+    }
+
+    pub(crate) fn apply_env_to_command(&self, command: &mut ProcessCommand) {
+        command.envs(
+            self.executable_env
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        );
+    }
+}
+
 use server_args_builder::{
     IsComplete, IsSet, IsUnset, SetHasModelSource, SetHfFile, SetHfRepo, SetModel, SetModelUrl,
     State,
@@ -1126,5 +1188,79 @@ impl Display for ReasoningBudget {
             None => "0",
             Unlimited => "-1",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::*;
+
+    #[test]
+    fn executable_env_is_applied_to_process_command() {
+        let mut args = ServerArgs::builder()
+            .hf_repo("dummy/repo")
+            .unwrap()
+            .build()
+            .with_env_var("TURBO_AUTO_ASYMMETRIC", "0");
+        args.set_env_var("ANY_RUNTIME_SETTING", "enabled");
+
+        let mut command = ProcessCommand::new("llama-server");
+        args.apply_env_to_command(&mut command);
+
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(OsStr::new("TURBO_AUTO_ASYMMETRIC"), Some(OsStr::new("0")))));
+        assert!(envs.contains(&(
+            OsStr::new("ANY_RUNTIME_SETTING"),
+            Some(OsStr::new("enabled"))
+        )));
+    }
+
+    #[test]
+    fn executable_env_is_not_rendered_as_cli_args() {
+        use cmdstruct::Command as _;
+
+        let args = ServerArgs::builder()
+            .hf_repo("dummy/repo")
+            .unwrap()
+            .build()
+            .with_env_var("TURBO_AUTO_ASYMMETRIC", "0");
+
+        let command = args.command();
+        let rendered_args: Vec<_> = command.get_args().collect();
+        assert!(!rendered_args.contains(&OsStr::new("TURBO_AUTO_ASYMMETRIC")));
+        assert!(!rendered_args.contains(&OsStr::new("0")));
+    }
+
+    #[test]
+    fn kv_unified_is_rendered_as_kvu_flag() {
+        use cmdstruct::Command as _;
+
+        let args = ServerArgs::builder()
+            .hf_repo("dummy/repo")
+            .unwrap()
+            .kv_unified(true)
+            .build();
+
+        let command = args.command();
+        let rendered_args: Vec<_> = command.get_args().collect();
+        assert!(rendered_args.contains(&OsStr::new("-kvu")));
+    }
+
+    #[test]
+    fn set_env_var_replaces_existing_value() {
+        let mut args = ServerArgs::builder()
+            .hf_repo("dummy/repo")
+            .unwrap()
+            .build()
+            .with_env_var("TURBO_AUTO_ASYMMETRIC", "1");
+
+        args.set_env_var("TURBO_AUTO_ASYMMETRIC", "0");
+
+        assert_eq!(
+            args.executable_env,
+            vec![("TURBO_AUTO_ASYMMETRIC".to_string(), "0".to_string())]
+        );
     }
 }

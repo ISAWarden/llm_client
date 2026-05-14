@@ -32,7 +32,7 @@
 //! | Flag &nbsp;(*repeatable?*)           | Default                | Purpose                                                     |
 //! |-------------------------------------|-------------------------|-------------------------------------------------------------|
 //! | `--repo-tag <TAG>`                  | library default         | Git tag or commit to check out.                             |
-//! | `--backend <BACKEND>`               | `default`               | Target hardware: `cpu`, `cuda`, `cuda-if-available`, …      |
+//! | `--backend <BACKEND>`               | `default`               | Target hardware: `cpu`, `cuda`, `rocm`, `vulkan`, …         |
 //! | `--mode <MODE>`                     | `build-or-install`      | Choose build-from-source, install-only, or auto.            |
 //! | `--build-arg <FLAG>` *(repeatable)* | _(none)_                | Extra `-D…` CMake flags forwarded verbatim.                 |
 //!
@@ -144,6 +144,7 @@ fn build_recipe(spec: &RecipeSpec, cli: &Cli) -> LmcppResult<LmcppToolChain> {
         .compute_backend(spec.backend)
         .build_install_mode(spec.mode.clone())
         .maybe_repo_tag(spec.repo_tag.clone())
+        .maybe_repo_url(spec.repo_url.clone())
         .maybe_override_root(cli.root.clone())?
         .maybe_project(cli.project.clone())
         .build_args(spec.build_args.clone())

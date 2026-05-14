@@ -104,6 +104,10 @@ const DEFAULT_FAIL_LIMIT: u8 = 3;
 /// 2025/08/05
 const LLAMA_CPP_DEFAULT_TAG: &str = "b6097";
 
+/// https://github.com/ggml-org/llama.cpp/releases/tag/b6097
+/// 2025/08/05
+const LLAMA_CPP_REPO_URL: &str = "https://github.com/ggml-org/llama.cpp";
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub const LMCPP_SERVER_EXECUTABLE: &str = "llama-server";
 #[cfg(target_os = "windows")]
@@ -153,6 +157,10 @@ pub struct LmcppToolChain {
     #[builder(default = LLAMA_CPP_DEFAULT_TAG.to_string(), into)]
     pub repo_tag: String,
 
+    /// The URL of the llama.cpp repository. Defaults to the official ggml-org repo.
+    #[builder(default = LLAMA_CPP_REPO_URL.to_string(), into)]
+    pub repo_url: String,
+
     /// Desired compute-backend *policy*.  See [`ComputeBackendConfig`] for
     /// platform-specific semantics and fall-back rules.
     /// *Note:* policies ending in `…IfAvailable` will gracefully fall back to
@@ -200,6 +208,8 @@ impl LmcppToolChain {
     pub const METAL_OFF: &str = "-DGGML_METAL=OFF";
     pub const METAL_ON: &str = "-DGGML_METAL=ON";
     pub const CUDA_ARG: &str = "-DGGML_CUDA=ON";
+    pub const ROCM_ARG: &str = "-DGGML_HIP=ON";
+    pub const VULKAN_ARG: &str = "-DGGML_VULKAN=ON";
     /// Build *or* install (depending on [`self.mode`](LmcppToolChain::mode)) and
     /// return a rich [`LmcppToolchainOutcome`] with timing, status and
     /// binary path.
@@ -215,6 +225,7 @@ impl LmcppToolChain {
             &self.compute_cfg,
             &self.mode,
             &self.build_args,
+            &self.repo_url,
         )?;
         let res = recipe.run()?;
         Ok(res)
@@ -234,6 +245,7 @@ impl LmcppToolChain {
             &self.compute_cfg,
             &self.mode,
             &self.build_args,
+            &self.repo_url,
         )?;
         let res = recipe.validate()?;
         Ok(res)
@@ -251,6 +263,7 @@ impl LmcppToolChain {
             &self.compute_cfg,
             &self.mode,
             &self.build_args,
+            &self.repo_url,
         )?;
         recipe.remove()
     }
@@ -520,10 +533,10 @@ impl std::fmt::Display for LmcppToolchainOutcome {
 
 /// Desired compute backend as expressed by the *caller*.
 ///
-/// The enum distinguishes between *hard requirements* (`Cuda`, `Metal`) and
-/// *preferences* (`CudaIfAvailable`, `MetalIfAvailable`).  The `Default` variant
-/// resolves to whichever accelerator is most performant on the current host,
-/// falling back to `Cpu` if none are present.
+/// The enum distinguishes between *hard requirements* (`Cuda`, `Rocm`,
+/// `Vulkan`, `Metal`) and preferences (`...IfAvailable`).  The `Default`
+/// variant resolves to the fastest detected accelerator for this host, falling
+/// back to `Cpu` if none are present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum ComputeBackendConfig {
     /// Use the fastest backend detected on this platform.
@@ -534,6 +547,14 @@ pub enum ComputeBackendConfig {
     Cuda,
     /// Prefer CUDA but silently fall back to CPU when unavailable.
     CudaIfAvailable,
+    /// Require ROCm/HIP – error out if no ROCm-capable GPU is found.
+    Rocm,
+    /// Prefer ROCm/HIP but silently fall back to CPU when unavailable.
+    RocmIfAvailable,
+    /// Require Vulkan – error out if no Vulkan-capable GPU is found.
+    Vulkan,
+    /// Prefer Vulkan but silently fall back to CPU when unavailable.
+    VulkanIfAvailable,
     /// Require Apple Metal (macOS only).
     Metal,
     /// Prefer Metal but fall back to CPU on non-Mac systems.
@@ -615,12 +636,99 @@ impl ComputeBackendConfig {
         Ok(ComputeBackend::Metal)
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn validate_rocm(mode: &LmcppBuildInstallMode) -> LmcppResult<ComputeBackend> {
+        let rocm_smi = if command_success("rocm-smi", &["--showid"]) {
+            true
+        } else {
+            command_success("/opt/rocm/bin/rocm-smi", &["--showid"])
+        };
+
+        if !rocm_smi {
+            return Err(LmcppError::BackendUnavailable {
+                what: "ROCm",
+                os: std::env::consts::OS,
+                arch: std::env::consts::ARCH,
+                reason: "rocm-smi was not found or did not report a ROCm device".into(),
+            });
+        }
+
+        if matches!(mode, LmcppBuildInstallMode::BuildOnly)
+            && !command_success("hipcc", &["--version"])
+        {
+            return Err(LmcppError::BackendUnavailable {
+                what: "ROCm",
+                os: std::env::consts::OS,
+                arch: std::env::consts::ARCH,
+                reason: "ROCm toolkit required to build with ROCm support. Install hipcc, or switch to LmcppBuildInstallMode::InstallOnly.".into(),
+            });
+        }
+
+        Ok(ComputeBackend::Rocm)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn validate_rocm(_: &LmcppBuildInstallMode) -> LmcppResult<ComputeBackend> {
+        Err(LmcppError::BackendUnavailable {
+            what: "ROCm",
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+            reason: "ROCm prebuilt detection is currently supported on Linux only".into(),
+        })
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub fn validate_vulkan(mode: &LmcppBuildInstallMode) -> LmcppResult<ComputeBackend> {
+        let vulkan_runtime = command_success("vulkaninfo", &["--summary"])
+            || command_success("vulkaninfo", &[])
+            || linux_vulkan_runtime_present()
+            || windows_vulkan_runtime_present();
+
+        if !vulkan_runtime {
+            return Err(LmcppError::BackendUnavailable {
+                what: "Vulkan",
+                os: std::env::consts::OS,
+                arch: std::env::consts::ARCH,
+                reason: "no Vulkan runtime detected".into(),
+            });
+        }
+
+        if matches!(mode, LmcppBuildInstallMode::BuildOnly)
+            && !(command_success("glslc", &["--version"])
+                || command_success("glslangValidator", &["--version"]))
+        {
+            return Err(LmcppError::BackendUnavailable {
+                what: "Vulkan",
+                os: std::env::consts::OS,
+                arch: std::env::consts::ARCH,
+                reason: "Vulkan shader compiler required to build with Vulkan support. Install glslc/glslangValidator, or switch to LmcppBuildInstallMode::InstallOnly.".into(),
+            });
+        }
+
+        Ok(ComputeBackend::Vulkan)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    pub fn validate_vulkan(_: &LmcppBuildInstallMode) -> LmcppResult<ComputeBackend> {
+        Err(LmcppError::BackendUnavailable {
+            what: "Vulkan",
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+            reason: "Vulkan prebuilt detection is currently supported on Linux and Windows only"
+                .into(),
+        })
+    }
+
     pub fn to_backend(self, mode: &LmcppBuildInstallMode) -> LmcppResult<ComputeBackend> {
         match self {
             ComputeBackendConfig::Default => Self::default_backend(mode),
             ComputeBackendConfig::Cpu => Ok(ComputeBackend::Cpu),
             ComputeBackendConfig::Cuda => Self::validate_cuda(mode),
             ComputeBackendConfig::CudaIfAvailable => Self::cuda_if_available(mode),
+            ComputeBackendConfig::Rocm => Self::validate_rocm(mode),
+            ComputeBackendConfig::RocmIfAvailable => Self::rocm_if_available(mode),
+            ComputeBackendConfig::Vulkan => Self::validate_vulkan(mode),
+            ComputeBackendConfig::VulkanIfAvailable => Self::vulkan_if_available(mode),
             ComputeBackendConfig::Metal => Self::validate_metal(),
             ComputeBackendConfig::MetalIfAvailable => Self::metal_if_available(),
         }
@@ -631,8 +739,8 @@ impl ComputeBackendConfig {
             Self::metal_if_available()
         } else if cfg!(any(target_os = "linux", target_os = "windows")) {
             Self::validate_cuda(mode)
-                // .or_else(|_| Self::validate_amd())
-                // .or_else(|_| Self::validate_intel()) // Intel Arc, etc.
+                .or_else(|_| Self::validate_rocm(mode))
+                .or_else(|_| Self::validate_vulkan(mode))
                 .or_else(|_| Ok(ComputeBackend::Cpu))
         } else {
             Ok(ComputeBackend::Cpu)
@@ -652,6 +760,20 @@ impl ComputeBackendConfig {
             Err(_) => Ok(ComputeBackend::Cpu), // Fallback to CPU if Metal is not available
         }
     }
+
+    fn rocm_if_available(mode: &LmcppBuildInstallMode) -> LmcppResult<ComputeBackend> {
+        match Self::validate_rocm(mode) {
+            Ok(backend) => Ok(backend),
+            Err(_) => Ok(ComputeBackend::Cpu),
+        }
+    }
+
+    fn vulkan_if_available(mode: &LmcppBuildInstallMode) -> LmcppResult<ComputeBackend> {
+        match Self::validate_vulkan(mode) {
+            Ok(backend) => Ok(backend),
+            Err(_) => Ok(ComputeBackend::Cpu),
+        }
+    }
 }
 
 impl Default for ComputeBackendConfig {
@@ -669,6 +791,8 @@ impl Default for ComputeBackendConfig {
 pub enum ComputeBackend {
     Cpu,
     Cuda,
+    Rocm,
+    Vulkan,
     Metal,
 }
 
@@ -677,9 +801,75 @@ impl std::fmt::Display for ComputeBackend {
         match self {
             ComputeBackend::Cpu => write!(f, "CPU"),
             ComputeBackend::Cuda => write!(f, "CUDA"),
+            ComputeBackend::Rocm => write!(f, "ROCm"),
+            ComputeBackend::Vulkan => write!(f, "Vulkan"),
             ComputeBackend::Metal => write!(f, "Metal"),
         }
     }
+}
+
+fn command_success(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_vulkan_runtime_present() -> bool {
+    let has_libvulkan = [
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/aarch64-linux-gnu",
+    ]
+    .iter()
+    .any(|dir| {
+        std::fs::read_dir(dir)
+            .ok()
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .map(|name| name.starts_with("libvulkan.so"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    });
+
+    has_libvulkan
+        && std::fs::read_dir("/dev/dri")
+            .ok()
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .map(|name| name.starts_with("renderD"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_vulkan_runtime_present() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn windows_vulkan_runtime_present() -> bool {
+    std::path::Path::new(r"C:\Windows\System32\vulkan-1.dll").exists()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_vulkan_runtime_present() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -869,6 +1059,8 @@ mod tests {
     fn compute_backend_display_strings() {
         assert_eq!(ComputeBackend::Cpu.to_string(), "CPU");
         assert_eq!(ComputeBackend::Cuda.to_string(), "CUDA");
+        assert_eq!(ComputeBackend::Rocm.to_string(), "ROCm");
+        assert_eq!(ComputeBackend::Vulkan.to_string(), "Vulkan");
         assert_eq!(ComputeBackend::Metal.to_string(), "Metal");
     }
 

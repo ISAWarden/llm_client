@@ -8,7 +8,10 @@ pub struct RecipeSpec {
     #[arg(long)]
     pub repo_tag: Option<String>,
 
-    /// CPU, CUDA, Metal, …
+    /// URL of the llama.cpp repository.
+    #[arg(long)]
+    pub repo_url: Option<String>,
+    /// CPU, CUDA, ROCm, Vulkan, Metal, …
     #[arg(long, default_value = "default", value_enum)]
     pub backend: ComputeBackendConfig,
 

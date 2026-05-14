@@ -28,6 +28,7 @@ pub fn cuda_available() -> bool {
 ///
 /// *   CPU is always available.<br>
 /// *   CUDA only when `cuda_available` is `true` on Linux/Windows.<br>
+/// *   ROCm/Vulkan are covered by unit-level backend detection tests.<br>
 /// *   Metal only on macOS.
 pub fn runtime_variants() -> Vec<(ComputeBackendConfig, LmcppBuildInstallMode)> {
     let mut cases = Vec::new();

@@ -18,7 +18,7 @@ impl LocalModelPath {
 
 impl Arg for LocalModelPath {
     fn append_arg(&self, cmd: &mut std::process::Command) {
-        cmd.arg(&self.0 .0);
+        cmd.arg(&self.0.0);
     }
 }
 

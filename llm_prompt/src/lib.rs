@@ -123,19 +123,21 @@ mod token_count;
 mod variants;
 
 // Internal imports
-#[allow(unused_imports)]
-use anyhow::{anyhow, bail, Error, Result};
-use serde::Serialize;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
-#[allow(unused_imports)]
-use tracing::{debug, error, info, span, trace, warn, Level};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
+#[allow(unused_imports)]
+use anyhow::{Error, Result, anyhow, bail};
 // Public exports
 pub use concatenator::{TextConcatenator, TextConcatenatorTrait};
 pub use prompt_message::{PromptMessage, PromptMessageType, PromptMessages};
 pub use prompt_tokenizer::PromptTokenizer;
-pub use variants::{apply_chat_template, ApiPrompt, LocalPrompt};
+use serde::Serialize;
+#[allow(unused_imports)]
+use tracing::{Level, debug, error, info, span, trace, warn};
+pub use variants::{ApiPrompt, LocalPrompt, apply_chat_template};
 
 /// A prompt management system that supports both API-based LLMs (like OpenAI) and local LLMs.
 ///
@@ -286,7 +288,9 @@ impl LlmPrompt {
             } else {
                 if let Some(last) = messages.last() {
                     if last.message_type == PromptMessageType::Assistant {
-                        crate::bail!( "Cannot add assistant message when previous message is assistant message.");
+                        crate::bail!(
+                            "Cannot add assistant message when previous message is assistant message."
+                        );
                     }
                 }
             };
@@ -435,7 +439,9 @@ impl LlmPrompt {
                     "Cannot build prompt when the current inference message is PromptMessageType::Assistant"
                 )
             } else if last.message_type == PromptMessageType::System {
-                crate::bail!("Cannot build prompt when the current inference message is PromptMessageType::System")
+                crate::bail!(
+                    "Cannot build prompt when the current inference message is PromptMessageType::System"
+                )
             } else {
                 Ok(())
             }
@@ -466,10 +472,12 @@ impl LlmPrompt {
             // Rule 3: Ensure alternating User/Assistant messages after the first message
             if i > 0 {
                 match (last_message_type, message_type) {
-                    (Some(PromptMessageType::User), PromptMessageType::Assistant) => {},
-                    (Some(PromptMessageType::Assistant), PromptMessageType::User) => {},
-                    (Some(PromptMessageType::System), PromptMessageType::User) => {},
-                    _ => panic!("Messages must alternate between User and Assistant after the first message (which can be System)."),
+                    (Some(PromptMessageType::User), PromptMessageType::Assistant) => {}
+                    (Some(PromptMessageType::Assistant), PromptMessageType::User) => {}
+                    (Some(PromptMessageType::System), PromptMessageType::User) => {}
+                    _ => panic!(
+                        "Messages must alternate between User and Assistant after the first message (which can be System)."
+                    ),
                 }
             }
             last_message_type = Some(message_type.clone());

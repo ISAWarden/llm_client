@@ -2,15 +2,13 @@ mod data;
 mod model;
 mod provider;
 
-use super::*;
 use data::*;
-use model::DeCloudLlms;
-use model::MacroCloudLlm;
-use model::MacroCloudLlms;
-use proc_macro2::Ident;
-use proc_macro2::TokenStream;
+use model::{DeCloudLlms, MacroCloudLlm, MacroCloudLlms};
+use proc_macro2::{Ident, TokenStream};
 use provider::MacroCloudLlmProvider;
 use quote::{format_ident, quote};
+
+use super::*;
 
 pub fn generate_api_providers_and_models(output_path: std::path::PathBuf) {
     model::generate(&output_path);

@@ -98,11 +98,14 @@ pub struct LmcppRecipe {
     pub fail_limit: u8,
     pub version: String,
     pub project: String,
+    pub repo_url: String,
 }
 
 impl LmcppRecipe {
     const RECIPE_NAME: &'static str = "llama_cpp";
 
+    /// Default URL for the llama.cpp repository.
+    #[cfg(test)]
     const LLAMA_CPP_REPO_URL: &str = "https://github.com/ggml-org/llama.cpp";
     const LLAMA_CPP_ENV_OVERRIDE: &str = "LLAMA_CPP_INSTALL_DIR";
 
@@ -114,6 +117,7 @@ impl LmcppRecipe {
         compute_cfg: &ComputeBackendConfig,
         mode: &LmcppBuildInstallMode,
         build_args: &ArgSet,
+        repo_url: &str,
     ) -> LmcppResult<Self> {
         assert!(!project.is_empty(), "Project name cannot be empty");
         assert!(!repo_tag.is_empty(), "Repo tag cannot be empty");
@@ -125,10 +129,14 @@ impl LmcppRecipe {
         let mut build_args = build_args.clone();
 
         let compute_backend: ComputeBackend = compute_cfg.to_backend(mode)?;
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             if matches!(compute_backend, ComputeBackend::Cuda) {
                 build_args.insert(LmcppToolChain::CUDA_ARG.to_owned());
+            } else if matches!(compute_backend, ComputeBackend::Rocm) {
+                build_args.insert(LmcppToolChain::ROCM_ARG.to_owned());
+            } else if matches!(compute_backend, ComputeBackend::Vulkan) {
+                build_args.insert(LmcppToolChain::VULKAN_ARG.to_owned());
             }
         }
         #[cfg(target_os = "macos")]
@@ -215,6 +223,7 @@ impl LmcppRecipe {
             fail_limit,
             version,
             project: project.to_owned(),
+            repo_url: repo_url.to_owned(),
             expected_build_args: build_args.clone(),
         })
     }
@@ -405,38 +414,58 @@ impl LmcppRecipe {
             .repo_tag
             .as_ref()
             .expect("Repo tag set in constructor");
-        let repo_url = Self::LLAMA_CPP_REPO_URL;
+        let repo_url = &self.repo_url;
 
-        let url = if cfg!(target_os = "linux") {
-            format!("{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-ubuntu-x64.tar.gz")
-        } else if cfg!(target_os = "macos") {
-            match std::env::consts::ARCH {
-                "aarch64" => format!(
-                    "{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-macos-arm64.tar.gz"
-                ),
-                "x86_64" => format!(
-                    "{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-macos-x64.tar.gz"
-                ),
-                arch => panic!("Unsupported architecture on macOS: {}", arch),
-            }
-        } else if cfg!(target_os = "windows") {
-            format!(
-                "{repo_url}/releases/download/{repo_tag}/llama-{repo_tag}-bin-win-cuda-12.4-x64.zip"
-            )
-        } else {
-            return Err(LmcppError::BackendUnavailable {
-                what: "Llama.cpp",
-                os: std::env::consts::OS,
-                arch: std::env::consts::ARCH,
-                reason: format!("Unsupported OS: {}", std::env::consts::OS),
-            });
-        };
+        let compute_backend = self
+            .cfg
+            .compute_backend
+            .as_ref()
+            .expect("Compute backend set in constructor");
+        let asset_name = self.prebuilt_asset_name(compute_backend)?;
+        let url = format!("{repo_url}/releases/download/{repo_tag}/{asset_name}");
 
         super::zip::download_and_extract_zip(&url, working_dir, "llama_cpp_binary")?;
         let bin_path = ValidFile::find_specific_file(working_dir, LMCPP_SERVER_EXECUTABLE)?;
         self.cfg.status = LmcppBuildInstallStatus::Installed;
         self.cfg.actual_build_args = ArgSet::default();
         Ok(bin_path)
+    }
+
+    fn prebuilt_asset_name(&self, compute_backend: &ComputeBackend) -> LmcppResult<String> {
+        let repo_tag = self
+            .cfg
+            .repo_tag
+            .as_ref()
+            .expect("Repo tag set in constructor");
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+
+        let suffix = match (os, arch, compute_backend) {
+            ("linux", "x86_64", ComputeBackend::Cpu) => "ubuntu-x64.tar.gz",
+            ("linux", "aarch64", ComputeBackend::Cpu) => "ubuntu-arm64.tar.gz",
+            ("linux", "x86_64", ComputeBackend::Rocm) => "ubuntu-rocm-7.2-x64.tar.gz",
+            ("linux", "x86_64", ComputeBackend::Vulkan) => "ubuntu-vulkan-x64.tar.gz",
+            ("linux", "aarch64", ComputeBackend::Vulkan) => "ubuntu-vulkan-arm64.tar.gz",
+            ("macos", "aarch64", ComputeBackend::Cpu | ComputeBackend::Metal) => {
+                "macos-arm64.tar.gz"
+            }
+            ("macos", "x86_64", ComputeBackend::Cpu | ComputeBackend::Metal) => "macos-x64.tar.gz",
+            ("windows", "x86_64", ComputeBackend::Cpu) => "win-cpu-x64.zip",
+            ("windows", "aarch64", ComputeBackend::Cpu) => "win-cpu-arm64.zip",
+            ("windows", "x86_64", ComputeBackend::Cuda) => "win-cuda-12.4-x64.zip",
+            ("windows", "x86_64", ComputeBackend::Rocm) => "win-hip-radeon-x64.zip",
+            ("windows", "x86_64", ComputeBackend::Vulkan) => "win-vulkan-x64.zip",
+            _ => {
+                return Err(LmcppError::BackendUnavailable {
+                    what: "Llama.cpp prebuilt binary",
+                    os: std::env::consts::OS,
+                    arch: std::env::consts::ARCH,
+                    reason: format!("no prebuilt asset for {compute_backend} on {os}/{arch}"),
+                });
+            }
+        };
+
+        Ok(format!("llama-{repo_tag}-bin-{suffix}"))
     }
 
     fn build_from_source(&mut self, working_dir: &ValidDir) -> LmcppResult<ValidFile> {
@@ -452,7 +481,7 @@ impl LmcppRecipe {
             super::cmake::curl_is_available()?;
         }
 
-        let repo_url = Self::LLAMA_CPP_REPO_URL;
+        let repo_url = &self.repo_url;
 
         let url = format!(
             "{repo_url}/archive/refs/tags/{}.zip",
@@ -732,7 +761,8 @@ mod tests {
                 "v0",                              // repo_tag
                 &ComputeBackendConfig::Cpu,        // backend = CPU
                 &LmcppBuildInstallMode::BuildOnly, // any build‑only mode will hit CMake early
-                &ArgSet::default(),                // no build‑args
+                &ArgSet::default(),                // no build-args
+                LmcppRecipe::LLAMA_CPP_REPO_URL,
             )
             .unwrap();
 
@@ -812,6 +842,7 @@ mod tests {
             &ComputeBackendConfig::Cpu,
             &LmcppBuildInstallMode::BuildOnly, // fingerprint expects “Built”
             &ArgSet::default(),
+            LmcppRecipe::LLAMA_CPP_REPO_URL,
         )?;
 
         /* Make fingerprint consistent with a successful *build*. */
@@ -879,6 +910,7 @@ mod tests {
             &ComputeBackendConfig::Cpu, // compute_cfg
             &mode,
             &ArgSet::default(), // build_args
+            LmcppRecipe::LLAMA_CPP_REPO_URL,
         )
         .expect("recipe construction must succeed")
     }
@@ -914,6 +946,7 @@ mod tests {
             &ComputeBackendConfig::Cpu,
             &LmcppBuildInstallMode::InstallOnly,
             &ArgSet::default(),
+            LmcppRecipe::LLAMA_CPP_REPO_URL,
         )
         .unwrap();
 
@@ -929,6 +962,7 @@ mod tests {
             &ComputeBackendConfig::Cpu,
             &LmcppBuildInstallMode::BuildOnly,
             &ArgSet::default(),
+            LmcppRecipe::LLAMA_CPP_REPO_URL,
         )
         .unwrap();
 
@@ -964,6 +998,7 @@ mod tests {
                     &ComputeBackendConfig::Cpu,
                     &LmcppBuildInstallMode::BuildOrInstall,
                     &ArgSet::default(),
+                    LmcppRecipe::LLAMA_CPP_REPO_URL,
                 )
                 .unwrap()
             }

@@ -1,7 +1,8 @@
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use serde::{Deserialize, Serialize};
 
 use super::TextConcatenator;
-use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Represents the type of message in a prompt sequence.
 ///
