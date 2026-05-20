@@ -302,16 +302,16 @@ impl LmcppServer {
                 // still loading the correct model → wait and retry
                 ServerStatus::Loading => (),
 
-                // this should fail instantly
-                // however, when we download using llama.cpp the health endpoint returns this rather than "loading"
                 ServerStatus::ErrorOrOffline(msg) => {
-                    if !expect_download {
+                    if guard.has_exited()? {
                         guard.stop()?;
                         return Err(LmcppError::ServerLaunch(format!(
                             "Server failed to start: {msg}"
                         )));
                     }
-                    // in download mode: treat as “still starting” while time & process permit
+                    // The HTTP/IPC endpoint may not exist yet while large local
+                    // models map weights or initialize GPU state. Keep polling
+                    // until the caller's startup budget expires.
                 }
             }
             if Instant::now() >= deadline {

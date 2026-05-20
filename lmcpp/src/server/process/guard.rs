@@ -250,6 +250,25 @@ impl ServerProcessGuard {
             .expect("Failed to lock inferred_ctx")
     }
 
+    /// Returns whether the managed child has already exited.
+    ///
+    /// This keeps startup polling from waiting through the full load budget
+    /// when `llama-server` fails before it opens its HTTP/IPC endpoint.
+    pub fn has_exited(&self) -> Result<bool> {
+        let mut child = self.child.write().expect("Failed to acquire write lock");
+        let Some(child) = child.as_mut() else {
+            return Ok(true);
+        };
+
+        child
+            .try_wait()
+            .map(|status| status.is_some())
+            .map_err(|e| ProcessError::CommandFailed {
+                action: "get exit status",
+                source: e.into(),
+            })
+    }
+
     #[cfg(all(test, target_os = "linux"))]
     pub fn dummy() -> Self {
         Self {
